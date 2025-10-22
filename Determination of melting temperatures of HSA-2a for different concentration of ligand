@@ -1,0 +1,178 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+path=""
+df= pd.read_excel(path,sheet_name='Melt Curve Raw Data',skiprows=39)
+import os
+from scipy.ndimage import gaussian_filter1d
+from scipy.signal import savgol_filter
+import matplotlib as mpl
+
+
+# === Matplotlib settings ===
+mpl.rcParams['font.family'] = 'Times New Roman'
+mpl.rcParams['axes.titlesize'] = 9
+mpl.rcParams['axes.labelsize'] = 9
+mpl.rcParams['xtick.labelsize'] = 7.2
+mpl.rcParams['ytick.labelsize'] = 7.2
+mpl.rcParams['legend.fontsize'] = 9
+mpl.rcParams['figure.titlesize'] = 10
+mpl.rcParams['lines.linewidth'] = 0.5
+mpl.rcParams['axes.linewidth'] = 0.5
+mpl.rcParams['xtick.major.width'] = 0.5
+mpl.rcParams['ytick.major.width'] = 0.5
+mpl.rcParams['xtick.minor.width'] = 0.5
+mpl.rcParams['ytick.minor.width'] = 0.5
+mpl.rcParams['grid.linewidth'] = 0.5
+
+# === Custom gradient function ===
+def custom_gradient(y, x, m=1):
+    y = np.asarray(y)
+    x = np.asarray(x)
+
+    if m >= len(y):
+        raise ValueError("m must be smaller than the length of the input array")
+
+    dy = y[m:] - y[:-m]
+    dx = x[m:] - x[:-m]
+
+    gradient = dy / dx
+    gradient = np.concatenate((np.full(m, np.nan), gradient))  # Pad with NaNs
+
+    return gradient
+
+# === Groups of wells ===
+groups = {
+    'HSA alone': ['A1', 'A2', 'A3'],
+    'HSA + 2a 50uM': ['A4', 'A5', 'A6'],
+    'HSA + 2a 130uM': ['A7', 'A8', 'A9'],
+    'HSA + 2a 500uM': ['A10', 'A11', 'A12'],
+    'HSA + 2a 1000uM': ['B1', 'B2', 'B3'],
+}
+
+# === Parameters ===
+m_value = 4      # Step size for gradient
+sigma_value = 4  # Gaussian smoothing sigma
+x_min, x_max = 64, 84  # Range for normalization and plotting
+
+# === Derivative calculation per well ===
+def calculate_derivatives_per_well(well_position, m, sigma):
+    data_well = df[df['Well Position'] == well_position]
+    
+    if data_well.empty:
+        print(f"No data for well position: {well_position}")
+        return None, None, None
+
+    temperatures = data_well['Temperature'].values
+    fluorescence_vals = data_well['Fluorescence'].values
+    
+    if len(fluorescence_vals) <= m:
+        print(f"Not enough data points for {well_position}. Found: {len(fluorescence_vals)}, Required: {m + 1}")
+        return temperatures, None, None
+    
+    derivative = custom_gradient(fluorescence_vals, temperatures, m=m)
+    derivative_smooth = gaussian_filter1d(derivative, sigma=sigma)
+
+    # Find max derivative within 60–80°C
+    valid_indices = np.where((temperatures <= 80) & (temperatures >= 60))[0]
+    max_temp = None
+    if valid_indices.size > 0:
+        max_index = np.nanargmax(derivative_smooth[valid_indices])
+        max_temp = temperatures[valid_indices[max_index]]
+
+    return temperatures, derivative_smooth, max_temp
+
+# === Collect data for plotting and max temps ===
+group_avg_temps = {}
+group_std_temps = {}
+
+fig, ax = plt.subplots(figsize=(2.25, 1.5))
+
+cmap = plt.cm.Reds
+custom_color = (0.6, 0.6, 0.6)
+colors = [custom_color] + [cmap(i) for i in np.linspace(0.4, 1, len(groups) - 1)]
+
+# === Plot normalized mean ± SD for each condition ===
+for (group_name, wells), color in zip(groups.items(), colors):
+    group_derivatives = []
+    group_temps = None
+    max_temperatures = []
+
+    for well in wells:
+        temps, smoothed_derivative, max_temp = calculate_derivatives_per_well(well, m_value, sigma_value)
+
+        if temps is not None and smoothed_derivative is not None:
+            # Mask to chosen x-range
+            mask = (temps >= x_min) & (temps <= x_max)
+            temps = temps[mask]
+            smoothed_derivative = smoothed_derivative[mask]
+
+            # Normalize each replicate individually
+            min_val = np.nanmin(smoothed_derivative)
+            max_val = np.nanmax(smoothed_derivative)
+            norm_derivative = (smoothed_derivative - min_val) / (max_val - min_val) * 100
+
+            group_derivatives.append(norm_derivative)
+            group_temps = temps
+
+            if max_temp is not None:
+                max_temperatures.append(max_temp)
+
+    
+    if group_derivatives:
+        group_derivatives = np.array(group_derivatives)
+        avg_curve = np.nanmean(group_derivatives, axis=0)
+        std_curve = np.nanstd(group_derivatives, axis=0)
+    
+        # Apply Savitzky–Golay smoothing (average and std separately)
+        avg_curve_smooth = savgol_filter(avg_curve, window_length=49, polyorder=5)
+        std_curve_smooth = savgol_filter(std_curve, window_length=5, polyorder=3)
+    
+        # Plot smoothed mean
+        ax.plot(group_temps, avg_curve_smooth, label=group_name, linewidth=0.5, color=color)
+        # Plot smoothed shaded SD
+        ax.fill_between(group_temps, avg_curve_smooth - std_curve_smooth, avg_curve_smooth + std_curve_smooth,
+                        color=color, alpha=0.1, edgecolor='none')
+
+
+    if max_temperatures:
+        group_avg_temps[group_name] = np.mean(max_temperatures)
+        group_std_temps[group_name] = np.std(max_temperatures)
+
+# === Print Tm ± SEM for each group ===
+print("Tm values (mean ± SEM):")
+for group_name in group_avg_temps:
+    avg_temp = group_avg_temps[group_name]
+    std_temp = group_std_temps[group_name]
+    sem = std_temp / np.sqrt(len(groups[group_name]))
+    print(f"{group_name}: Tm = {avg_temp:.1f} ± {sem:.1f} °C")
+
+
+# === Vertical lines + SEM bands for max temperatures ===
+ymin, ymax = 0, 100
+for (group_name, _), color in zip(groups.items(), colors):
+    if group_name in group_avg_temps:
+        avg_temp = group_avg_temps[group_name]
+        std_temp = group_std_temps[group_name]
+        tm_error = std_temp / np.sqrt(len(groups[group_name]))  # SEM
+
+        ax.axvline(x=avg_temp, color=color, linestyle='--', linewidth=0.5, label='_nolegend_')
+        
+        ax.fill_betweenx([ymin, ymax], avg_temp - tm_error, avg_temp + tm_error, color=color, alpha=0.2, label='_nolegend_', edgecolor='none')
+
+# === Styling ===
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+ax.set_xlim(x_min, x_max)
+ax.set_ylim(ymin, ymax)
+ax.set_title(f'Normalized Smoothed Derivatives (m={m_value}, sigma={sigma_value})')
+ax.set_xlabel('Temperature (°C)')
+ax.set_ylabel('Normalized Derivative (%)')
+ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left', borderaxespad=0)
+
+# Save the plot as an image
+save_path = r"C:\Users\Malo\MIT Dropbox\Malo Chevalier\Malo's project QBI-139 pharmacokinetics\Malo\Data\DSF\20241011_HSA_cleav-AB\norm_deriv_shadedarea.svg"
+# plt.savefig(save_path, format="svg", dpi=1000, bbox_inches='tight')
+# plt.savefig("/path/to/directory/filename.pdf")
+
+plt.show()
