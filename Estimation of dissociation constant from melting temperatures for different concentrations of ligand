@@ -1,0 +1,80 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.optimize import curve_fit
+import matplotlib as mpl
+from matplotlib.ticker import AutoMinorLocator
+
+# Create figure
+fig, ax = plt.subplots(figsize=(2.25, 1.5))
+# fig, ax = plt.subplots(figsize=(10,6))
+
+# Experimental data: ligand concentration (uM), melting temperatures (°C), and errors (°C)
+concentrations = np.array([0, 50, 130, 500, 1000])
+melting_temperatures = np.array([68.6,69.1,68.9,76.3,78.4])
+errors = np.array([0.2,0.2,0.2,0.3,0.2])
+
+# Hill sigmoidal curve
+def improved_melting_curve(L, Tm_min, Tm_max, Kd, h):
+    return Tm_min + (Tm_max - Tm_min) * (L**h / (Kd**h + L**h))
+
+# Initial guesses for Tm_min, Tm_max, Kd, and h
+initial_guesses = [68.6, 78.4, 100.0, 1.0]
+
+# Fitting
+popt, pcov = curve_fit(improved_melting_curve, concentrations, melting_temperatures, p0=initial_guesses, sigma=errors, absolute_sigma=True)
+
+# Extract the fitted parameters and their standard deviations
+Tm_min_fitted, Tm_max_fitted, Kd_fitted, n_fitted = popt
+Tm_min_std, Tm_max_std, Kd_std, n_std = np.sqrt(np.diag(pcov))
+
+# Generate fine range of ligand concentrations for smooth curve
+L_fine = np.linspace(0, 1000, 100)
+fitted_temperatures = improved_melting_curve(L_fine, *popt)
+
+## Plotting
+plt.errorbar(concentrations, melting_temperatures, yerr=errors, fmt='o', markersize=3, elinewidth=0.5, color='black', capsize=2) # Plot data
+plt.plot(L_fine, fitted_temperatures, '-', color='black') # Plot curve
+plt.axvline(x=Kd_fitted, color='black', linestyle='--', linewidth=0.5) # Represent Kd with a vertical dashed line
+ax.axvspan(Kd_fitted - Kd_std, Kd_fitted + Kd_std, color='black', alpha=0.07, edgecolor=None) # Represent SD of Kd
+plt.text(Kd_fitted + 80, np.min(melting_temperatures) + 1, f'$K_d$ = {Kd_fitted:.2f} ± {Kd_std:.2f} µM', fontsize=7.2, color='black') # Display the Kd±SD
+
+## Visuals
+# Fonts, axes
+mpl.rcParams['font.family'] = 'Times New Roman'
+mpl.rcParams['axes.titlesize'] = 9
+mpl.rcParams['axes.labelsize'] = 9
+mpl.rcParams['xtick.labelsize'] = 7.2
+mpl.rcParams['ytick.labelsize'] = 7.2
+mpl.rcParams['legend.fontsize'] = 9
+mpl.rcParams['figure.titlesize'] = 10
+
+mpl.rcParams['lines.linewidth'] = 0.5
+mpl.rcParams['axes.linewidth'] = 0.5
+mpl.rcParams['xtick.major.width'] = 0.5
+mpl.rcParams['ytick.major.width'] = 0.5
+mpl.rcParams['xtick.minor.width'] = 0.5
+mpl.rcParams['ytick.minor.width'] = 0.5
+mpl.rcParams['grid.linewidth'] = 0.5
+
+ax.minorticks_on()
+ax.xaxis.set_minor_locator(AutoMinorLocator(2))
+ax.yaxis.set_minor_locator(AutoMinorLocator(5))
+ax = plt.gca()
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+
+# Labels and title
+plt.xlabel('Concentration of amine-cleavable-AB (µM)')
+plt.ylabel('$T_m$ (°C)')
+plt.title('$T_m$ against [cleav-AB]')
+plt.subplots_adjust(bottom=0.25)  # prevent cropping
+
+'''
+print(f"Fitted parameters with uncertainties:")
+print(f" Tm_min = {Tm_min_fitted:.2f} ± {Tm_min_std:.2f} °C")
+print(f" Tm_max = {Tm_max_fitted:.2f} ± {Tm_max_std:.2f} °C")
+print(f" Kd = {Kd_fitted:.2f} ± {Kd_std:.2f} µM")
+print(f" Hill coefficient (n) = {n_fitted:.2f} ± {n_std:.2f}")
+'''
+
+plt.show()
